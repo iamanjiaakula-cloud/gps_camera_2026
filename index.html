@@ -96,9 +96,8 @@ function lines() {
   const n = now();
   const code = pos ? plusCode(pos.latitude, pos.longitude) : '—';
   const lat = pos ? pos.latitude.toFixed(6) : '—', lon = pos ? pos.longitude.toFixed(6) : '—';
-  const title = [addr.city, addr.state, addr.country].filter(ok).join(', ') || 'Locating…';
-  const full = [ok(code) ? 'Plus code: ' + code : '', addr.area, addr.city, (ok(addr.state) ? addr.state : '') + (ok(addr.pincode) ? ' ' + addr.pincode : ''), addr.country]
-    .map(s => (s || '').trim()).filter(ok).join(', ');
+  const title = [addr.city, addr.country].filter(ok).join(', ') || 'Locating…';
+  const full = ok(code) ? 'Plus code: ' + code : '';
   return {
     n, title, full,
     fields: 'Street: ' + addr.street + ' | Area: ' + addr.area + ' | District: ' + addr.district + ' | State: ' + addr.state + ' | Pincode: ' + addr.pincode,
