@@ -78,7 +78,7 @@ function plusCode(lat, lng) {
   la = Math.floor(la / 5); lo = Math.floor(lo / 4);
   let pairs = '';
   for (let i = 0; i < 5; i++) { pairs = A[la % 20] + A[lo % 20] + pairs; la = Math.floor(la / 20); lo = Math.floor(lo / 20); }
-  return (pairs.slice(2, 8) + '+' + pairs.slice(8) + grid);   // short form, e.g. C4HJ+PVW
+  return (pairs.slice(4, 8) + '+' + pairs.slice(8) + grid);   // short form, e.g. C4HJ+PVW
 }
  
 /* ---------- Text lines ---------- */
@@ -96,8 +96,8 @@ function lines() {
   const n = now();
   const code = pos ? plusCode(pos.latitude, pos.longitude) : '—';
   const lat = pos ? pos.latitude.toFixed(6) : '—', lon = pos ? pos.longitude.toFixed(6) : '—';
-  const title = [addr.city, addr.country].filter(ok).join(', ') || 'Locating…';
-  const full = ok(code) ? 'Plus code: ' + code : '';
+  const title = ok(code) ? 'Plus code: ' + code : 'Locating…';
+  const full = '';
   return {
     n, title, full,
     fields: 'Street: ' + addr.street + ' | Area: ' + addr.area + ' | District: ' + addr.district + ' | State: ' + addr.state + ' | Pincode: ' + addr.pincode,
