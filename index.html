@@ -12,7 +12,7 @@ html,body{height:100%;background:#000;color:#fff;font-family:system-ui,-apple-sy
 #info{position:fixed;left:8px;right:8px;bottom:calc(124px + env(safe-area-inset-bottom,0px));display:flex;gap:8px;align-items:flex-end}
 #mapv{width:84px;height:84px;border-radius:8px;background:#222;flex:none}
 #txt{flex:1;min-width:0;padding:8px 10px;border-radius:10px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);line-height:1.3;font-size:clamp(11px,3vw,14px);max-height:34vh;overflow:hidden}
-#txt .h{font-weight:700}
+#txt .h{font-size:1.3em;font-weight:700}
 #txt .dim{opacity:.85}
 #bar{position:fixed;left:0;right:0;bottom:0;height:calc(116px + env(safe-area-inset-bottom,0px));padding-bottom:env(safe-area-inset-bottom,0px);display:flex;align-items:center;justify-content:space-around;background:rgba(0,0,0,.7)}
 button{font:inherit;color:inherit;border:0;cursor:pointer}
@@ -36,18 +36,18 @@ button{font:inherit;color:inherit;border:0;cursor:pointer}
 <body>
 <video id="cam" autoplay playsinline muted></video>
 <div id="status"><span id="st">Getting location…</span></div>
- 
+
 <div id="info">
   <canvas id="mapv" width="168" height="168"></canvas>
   <div id="txt"></div>
 </div>
- 
+
 <div id="bar">
   <button class="side" id="last" aria-label="View last photo">🖼</button>
   <button id="shot" aria-label="Take photo"></button>
   <button class="side" id="flip" aria-label="Switch camera">🔄</button>
 </div>
- 
+
 <div id="view">
   <img id="prev" alt="Captured photo">
   <div class="acts">
@@ -56,20 +56,31 @@ button{font:inherit;color:inherit;border:0;cursor:pointer}
     <button class="pri" id="save">Save</button>
   </div>
 </div>
- 
+
 <div id="err"><div id="errmsg"></div></div>
- 
+
 <script>
 const $ = id => document.getElementById(id);
 const cam = $('cam'), shot = $('shot');
 let stream, facing = 'environment', pos = null, lastGeo = null, geoBusy = false, blob = null, fname = '';
 let mapImg = null;
 let addr = { area: '—', district: '—', state: '—', pincode: '—', city: '—', street: '—', country: '' };
- 
+
 const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const pad = n => String(n).padStart(2, '0');
 const ok = v => v && v !== '—';
- 
+
+/* ---------- Plus code (Open Location Code, same as Google) ---------- */
+function plusCode(lat, lng) {
+  const A = '23456789CFGHJMPQRVWX';
+  let la = Math.floor((lat + 90) * 40000), lo = Math.floor((lng + 180) * 32000);
+  const grid = A[(la % 5) * 4 + (lo % 4)];
+  la = Math.floor(la / 5); lo = Math.floor(lo / 4);
+  let pairs = '';
+  for (let i = 0; i < 5; i++) { pairs = A[la % 20] + A[lo % 20] + pairs; la = Math.floor(la / 20); lo = Math.floor(lo / 20); }
+  return (pairs.slice(2, 8) + '+' + pairs.slice(8) + grid);   // short form, e.g. C4HJ+PVW
+}
+
 /* ---------- Text lines ---------- */
 function now() {
   const d = new Date(), h = d.getHours(), off = -d.getTimezoneOffset(), a = Math.abs(off);
@@ -83,9 +94,13 @@ function now() {
 }
 function lines() {
   const n = now();
+  const code = pos ? plusCode(pos.latitude, pos.longitude) : '—';
   const lat = pos ? pos.latitude.toFixed(6) : '—', lon = pos ? pos.longitude.toFixed(6) : '—';
+  const title = [addr.city, addr.state, addr.country].filter(ok).join(', ') || 'Locating…';
+  const full = [ok(code) ? 'Plus code: ' + code : '', addr.area, addr.city, (ok(addr.state) ? addr.state : '') + (ok(addr.pincode) ? ' ' + addr.pincode : ''), addr.country]
+    .map(s => (s || '').trim()).filter(ok).join(', ');
   return {
-    n,
+    n, title, full,
     fields: 'Street: ' + addr.street + ' | Area: ' + addr.area + ' | District: ' + addr.district + ' | State: ' + addr.state + ' | Pincode: ' + addr.pincode,
     coords: 'Lat ' + lat + '° Long ' + lon + '°',
     when: n.day + ', ' + n.date + ' ' + n.time + ' ' + n.tz
@@ -94,10 +109,10 @@ function lines() {
 function render() {
   const L = lines();
   const e = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-  $('txt').innerHTML = '<div class="h">' + e(L.fields) + '</div><div>' + e(L.coords) + '</div><div>' + e(L.when) + '</div>';
+  $('txt').innerHTML = '<div class="h">' + e(L.title) + '</div><div>' + e(L.full) + '</div><div class="dim">' + e(L.fields) + '</div><div>' + e(L.coords) + '</div><div>' + e(L.when) + '</div>';
 }
 setInterval(render, 1000); render();
- 
+
 /* ---------- Map thumbnail (satellite tiles, pin at your position) ---------- */
 const SOURCES = [
   (z, x, y) => 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/' + z + '/' + y + '/' + x,
@@ -132,7 +147,7 @@ async function loadMap(lat, lon) {
     return;
   }
 }
- 
+
 /* ---------- Camera ---------- */
 async function startCam() {
   if (stream) stream.getTracks().forEach(t => t.stop());
@@ -149,7 +164,7 @@ async function startCam() {
   }
 }
 $('flip').onclick = () => { facing = facing === 'user' ? 'environment' : 'user'; startCam(); };
- 
+
 /* ---------- Location ---------- */
 function dist(a, b, c, d) {
   const R = 6371000, r = x => x * Math.PI / 180;
@@ -192,7 +207,7 @@ function startGeo() {
     $('st').textContent = e.code === 1 ? 'Location permission denied' : 'Cannot get location';
   }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
 }
- 
+
 /* ---------- Capture ---------- */
 function wrap(x, text, maxW) {
   const words = text.split(' '), out = []; let cur = '';
@@ -209,23 +224,23 @@ shot.onclick = () => {
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const x = c.getContext('2d');
   x.drawImage(cam, 0, 0, w, h);
- 
+
   const L = lines(), fs = Math.max(14, Math.round(Math.min(w, h) * 0.028));
   const m = fs * 0.6, ms = fs * 7.5, p = fs * 0.7, tw = w - m * 3 - ms - p * 2;
   const F = (sz, b) => (b ? '700 ' : '500 ') + sz + 'px system-ui,sans-serif';
   const rows = [];
-  x.font = F(fs, 1); wrap(x, L.fields, tw).forEach(t => rows.push([t, fs, 1]));
-  x.font = F(fs); [L.coords, L.when].forEach(s => wrap(x, s, tw).forEach(t => rows.push([t, fs, 0])));
+  x.font = F(fs * 1.35, 1); wrap(x, L.title, tw).forEach(t => rows.push([t, fs * 1.35, 1]));
+  x.font = F(fs); [L.full, L.fields, L.coords, L.when].forEach(s => wrap(x, s, tw).forEach(t => rows.push([t, fs, 0])));
   const textH = rows.reduce((s, r) => s + r[1] * 1.35, 0) + p * 2;
   const panelH = Math.max(textH, ms), px = m * 2 + ms, py = h - m - panelH;
- 
+
   x.fillStyle = 'rgba(0,0,0,.6)';
   x.beginPath(); x.roundRect(px, py, w - m - px, panelH, fs * 0.5); x.fill();
   if (mapImg) { x.save(); x.beginPath(); x.roundRect(m, h - m - ms, ms, ms, fs * 0.4); x.clip(); x.drawImage(mapImg, m, h - m - ms, ms, ms); x.restore(); }
   x.fillStyle = '#fff'; x.textBaseline = 'top';
   let y = py + (panelH - textH) / 2 + p;
   rows.forEach(r => { x.font = F(r[1], r[2]); x.fillText(r[0], px + p, y); y += r[1] * 1.35; });
- 
+
   const d = L.n.d;
   fname = 'GPS_' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.jpg';
   shot.disabled = true;
@@ -251,7 +266,7 @@ $('share').onclick = async () => {
     try { await navigator.share({ files: [f], title: 'GPS Photo' }); } catch (e) {}
   } else $('save').onclick();
 };
- 
+
 startCam(); startGeo();
 </script>
 </body>
