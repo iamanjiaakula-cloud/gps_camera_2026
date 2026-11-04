@@ -9,11 +9,11 @@
 *{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;background:#000;color:#fff;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
 #cam{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
-#info{position:fixed;left:10px;right:10px;bottom:calc(128px + env(safe-area-inset-bottom,0px));padding:10px 12px;border-radius:10px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);line-height:1.35;font-size:clamp(12px,3.4vw,15px)}
-#info .t{font-size:1.9em;font-weight:700;letter-spacing:.5px}
-#info .t small{font-size:.5em;font-weight:500;margin-left:8px;opacity:.9}
-#info .loc{opacity:.95}
-#info .dim{opacity:.7}
+#info{position:fixed;left:8px;right:8px;bottom:calc(124px + env(safe-area-inset-bottom,0px));display:flex;gap:8px;align-items:flex-end}
+#mapv{width:84px;height:84px;border-radius:8px;background:#222;flex:none}
+#txt{flex:1;min-width:0;padding:8px 10px;border-radius:10px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);line-height:1.3;font-size:clamp(11px,3vw,14px);max-height:34vh;overflow:hidden}
+#txt .h{font-size:1.3em;font-weight:700}
+#txt .dim{opacity:.85}
 #bar{position:fixed;left:0;right:0;bottom:0;height:calc(116px + env(safe-area-inset-bottom,0px));padding-bottom:env(safe-area-inset-bottom,0px);display:flex;align-items:center;justify-content:space-around;background:rgba(0,0,0,.7)}
 button{font:inherit;color:inherit;border:0;cursor:pointer}
 #shot{width:74px;height:74px;border-radius:50%;background:#fff;border:5px solid #000;outline:3px solid #fff;transition:transform .08s}
@@ -28,7 +28,7 @@ button{font:inherit;color:inherit;border:0;cursor:pointer}
 #view img{flex:1;min-height:0;width:100%;object-fit:contain}
 #view .acts{display:flex;gap:10px;padding:12px;padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))}
 #view .acts button{flex:1;padding:14px;border-radius:10px;background:#2a2a2a;font-weight:600}
-#view .acts .pri{background:#1fa971}
+#view .acts button.pri{background:#1fa971;color:#fff}
 #err{position:fixed;inset:0;display:none;place-items:center;text-align:center;padding:30px;background:#000;line-height:1.5}
 #err.on{display:grid}
 </style>
@@ -38,10 +38,8 @@ button{font:inherit;color:inherit;border:0;cursor:pointer}
 <div id="status"><span id="st">Getting location…</span></div>
 
 <div id="info">
-  <div class="t"><span id="time">--:--</span><small id="dateday"></small></div>
-  <div class="dim" id="coords">Lat — | Long —</div>
-  <div class="loc" id="l1">Area: — | District: —</div>
-  <div class="loc" id="l2">State: — | Pincode: —</div>
+  <canvas id="mapv" width="168" height="168"></canvas>
+  <div id="txt"></div>
 </div>
 
 <div id="bar">
@@ -65,40 +63,90 @@ button{font:inherit;color:inherit;border:0;cursor:pointer}
 const $ = id => document.getElementById(id);
 const cam = $('cam'), shot = $('shot');
 let stream, facing = 'environment', pos = null, lastGeo = null, geoBusy = false, blob = null, fname = '';
-let addr = { area: '—', district: '—', state: '—', pincode: '—' };
+let mapImg = null;
+let addr = { area: '—', district: '—', state: '—', pincode: '—', city: '—', street: '—', country: '' };
 
 const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const pad = n => String(n).padStart(2, '0');
+const ok = v => v && v !== '—';
+
+/* ---------- Plus code (Open Location Code, same as Google) ---------- */
+function plusCode(lat, lng) {
+  const A = '23456789CFGHJMPQRVWX';
+  let la = Math.floor((lat + 90) * 40000), lo = Math.floor((lng + 180) * 32000);
+  const grid = A[(la % 5) * 4 + (lo % 4)];
+  la = Math.floor(la / 5); lo = Math.floor(lo / 4);
+  let pairs = '';
+  for (let i = 0; i < 5; i++) { pairs = A[la % 20] + A[lo % 20] + pairs; la = Math.floor(la / 20); lo = Math.floor(lo / 20); }
+  return (pairs.slice(2, 8) + '+' + pairs.slice(8) + grid);   // short form, e.g. C4HJ+PVW
+}
+
+/* ---------- Text lines ---------- */
 function now() {
-  const d = new Date(), h = d.getHours();
+  const d = new Date(), h = d.getHours(), off = -d.getTimezoneOffset(), a = Math.abs(off);
   return {
     d,
     time: pad(h % 12 || 12) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + ' ' + (h < 12 ? 'AM' : 'PM'),
     date: pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear(),
-    day: DAYS[d.getDay()]
+    day: DAYS[d.getDay()],
+    tz: 'GMT ' + (off < 0 ? '-' : '+') + pad(Math.floor(a / 60)) + ':' + pad(a % 60)
   };
 }
 function lines() {
   const n = now();
+  const code = pos ? plusCode(pos.latitude, pos.longitude) : '—';
   const lat = pos ? pos.latitude.toFixed(6) : '—', lon = pos ? pos.longitude.toFixed(6) : '—';
+  const title = [addr.city, addr.state, addr.country].filter(ok).join(', ') || 'Locating…';
+  const full = [ok(code) ? 'Plus code: ' + code : '', addr.area, addr.city, (ok(addr.state) ? addr.state : '') + (ok(addr.pincode) ? ' ' + addr.pincode : ''), addr.country]
+    .map(s => (s || '').trim()).filter(ok).join(', ');
   return {
-    n,
-    l0: n.time,
-    l0b: n.date + ' | ' + n.day,
-    l1: 'Lat ' + lat + ' | Long ' + lon,
-    l2: 'Area: ' + addr.area + ' | District: ' + addr.district,
-    l3: 'State: ' + addr.state + ' | Pincode: ' + addr.pincode
+    n, title, full,
+    fields: 'Street: ' + addr.street + ' | Area: ' + addr.area + ' | District: ' + addr.district + ' | State: ' + addr.state + ' | Pincode: ' + addr.pincode,
+    coords: 'Lat ' + lat + '° Long ' + lon + '°',
+    when: n.day + ', ' + n.date + ' ' + n.time + ' ' + n.tz
   };
 }
 function render() {
   const L = lines();
-  $('time').textContent = L.n.time;
-  $('dateday').textContent = L.l0b;
-  $('coords').textContent = L.l1;
-  $('l1').textContent = L.l2;
-  $('l2').textContent = L.l3;
+  const e = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  $('txt').innerHTML = '<div class="h">' + e(L.title) + '</div><div>' + e(L.full) + '</div><div class="dim">' + e(L.fields) + '</div><div>' + e(L.coords) + '</div><div>' + e(L.when) + '</div>';
 }
 setInterval(render, 1000); render();
+
+/* ---------- Map thumbnail (satellite tiles, pin at your position) ---------- */
+const SOURCES = [
+  (z, x, y) => 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/' + z + '/' + y + '/' + x,
+  (z, x, y) => 'https://tile.openstreetmap.org/' + z + '/' + x + '/' + y + '.png'
+];
+const loadImg = u => new Promise(r => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => r(i); i.onerror = () => r(null); i.src = u; });
+async function loadMap(lat, lon) {
+  const z = 16, n = 2 ** z;
+  const px = (lon + 180) / 360 * n;
+  const py = (1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * n;
+  const tx = Math.floor(px), ty = Math.floor(py);
+  for (const src of SOURCES) {
+    const jobs = [];
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) jobs.push(loadImg(src(z, tx + dx, ty + dy)));
+    const imgs = await Promise.all(jobs);
+    if (imgs.some(i => !i)) continue;
+    const big = document.createElement('canvas'); big.width = big.height = 768;
+    const g = big.getContext('2d');
+    imgs.forEach((im, k) => g.drawImage(im, (k % 3) * 256, Math.floor(k / 3) * 256));
+    const cx = 256 + (px - tx) * 256, cy = 256 + (py - ty) * 256, S = 384;
+    const c = document.createElement('canvas'); c.width = c.height = S;
+    const x = c.getContext('2d');
+    x.drawImage(big, cx - S / 2, cy - S / 2, S, S, 0, 0, S, S);
+    // pin
+    const m = S / 2;
+    x.fillStyle = '#e53935'; x.strokeStyle = '#fff'; x.lineWidth = 3;
+    x.beginPath(); x.arc(m, m - 34, 20, Math.PI * 0.8, Math.PI * 2.2); x.lineTo(m, m); x.closePath(); x.fill(); x.stroke();
+    x.fillStyle = '#fff'; x.beginPath(); x.arc(m, m - 34, 7, 0, 7); x.fill();
+    x.fillStyle = 'rgba(255,255,255,.8)'; x.font = '12px sans-serif'; x.fillText(src === SOURCES[0] ? '© Esri' : '© OpenStreetMap', 6, S - 6);
+    mapImg = c;
+    const v = $('mapv').getContext('2d'); v.drawImage(c, 0, 0, 168, 168);
+    return;
+  }
+}
 
 /* ---------- Camera ---------- */
 async function startCam() {
@@ -126,14 +174,19 @@ function dist(a, b, c, d) {
 async function reverse(lat, lon) {
   if (geoBusy) return;
   geoBusy = true;
+  loadMap(lat, lon);
   try {
     const r = await fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&accept-language=en&zoom=18&lat=' + lat + '&lon=' + lon);
     const a = (await r.json()).address || {};
+    const street = [a.house_number, a.road || a.pedestrian || a.footway || a.path].filter(Boolean).join(' ');
     addr = {
       area: a.suburb || a.neighbourhood || a.village || a.hamlet || a.town || a.city_district || a.city || '—',
       district: a.state_district || a.county || a.city || '—',
       state: a.state || '—',
-      pincode: a.postcode || '—'
+      pincode: a.postcode || '—',
+      city: a.city || a.town || a.village || a.state_district || a.county || '—',
+      street: street || '—',
+      country: a.country || ''
     };
     lastGeo = { lat, lon };
     $('st').textContent = '📍 Location locked';
@@ -156,6 +209,15 @@ function startGeo() {
 }
 
 /* ---------- Capture ---------- */
+function wrap(x, text, maxW) {
+  const words = text.split(' '), out = []; let cur = '';
+  for (const w of words) {
+    const t = cur ? cur + ' ' + w : w;
+    if (x.measureText(t).width > maxW && cur) { out.push(cur); cur = w; } else cur = t;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
 shot.onclick = () => {
   if (!cam.videoWidth) return;
   const w = cam.videoWidth, h = cam.videoHeight;
@@ -163,25 +225,21 @@ shot.onclick = () => {
   const x = c.getContext('2d');
   x.drawImage(cam, 0, 0, w, h);
 
-  const L = lines(), fs = Math.max(16, Math.round(Math.min(w, h) * 0.034));
-  const pad_ = fs * 0.7, boxH = fs * 1.9 + fs * 4.4 + pad_ * 2;
-  x.fillStyle = 'rgba(0,0,0,.55)';
-  x.fillRect(0, h - boxH, w, boxH);
+  const L = lines(), fs = Math.max(14, Math.round(Math.min(w, h) * 0.028));
+  const m = fs * 0.6, ms = fs * 7.5, p = fs * 0.7, tw = w - m * 3 - ms - p * 2;
+  const F = (sz, b) => (b ? '700 ' : '500 ') + sz + 'px system-ui,sans-serif';
+  const rows = [];
+  x.font = F(fs * 1.35, 1); wrap(x, L.title, tw).forEach(t => rows.push([t, fs * 1.35, 1]));
+  x.font = F(fs); [L.full, L.fields, L.coords, L.when].forEach(s => wrap(x, s, tw).forEach(t => rows.push([t, fs, 0])));
+  const textH = rows.reduce((s, r) => s + r[1] * 1.35, 0) + p * 2;
+  const panelH = Math.max(textH, ms), px = m * 2 + ms, py = h - m - panelH;
+
+  x.fillStyle = 'rgba(0,0,0,.6)';
+  x.beginPath(); x.roundRect(px, py, w - m - px, panelH, fs * 0.5); x.fill();
+  if (mapImg) { x.save(); x.beginPath(); x.roundRect(m, h - m - ms, ms, ms, fs * 0.4); x.clip(); x.drawImage(mapImg, m, h - m - ms, ms, ms); x.restore(); }
   x.fillStyle = '#fff'; x.textBaseline = 'top';
-  let y = h - boxH + pad_;
-  x.font = '700 ' + fs * 1.7 + 'px system-ui,sans-serif';
-  x.fillText(L.l0, pad_, y);
-  const tw = x.measureText(L.l0).width;
-  x.font = '500 ' + fs * 0.9 + 'px system-ui,sans-serif';
-  x.fillText(L.l0b, pad_ + tw + fs * 0.6, y + fs * 0.7);
-  y += fs * 1.9;
-  x.font = '500 ' + fs + 'px system-ui,sans-serif';
-  [L.l1, L.l2, L.l3].forEach(t => {
-    let size = fs;
-    while (x.measureText(t).width > w - pad_ * 2 && size > 10) { size -= 1; x.font = '500 ' + size + 'px system-ui,sans-serif'; }
-    x.fillText(t, pad_, y);
-    y += fs * 1.45; x.font = '500 ' + fs + 'px system-ui,sans-serif';
-  });
+  let y = py + (panelH - textH) / 2 + p;
+  rows.forEach(r => { x.font = F(r[1], r[2]); x.fillText(r[0], px + p, y); y += r[1] * 1.35; });
 
   const d = L.n.d;
   fname = 'GPS_' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.jpg';
