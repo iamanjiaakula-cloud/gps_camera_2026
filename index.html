@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>GPS Camera</title>
+<style>
+*{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:#000;color:#fff;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+#cam{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
+#info{position:fixed;left:10px;right:10px;bottom:calc(128px + env(safe-area-inset-bottom,0px));padding:10px 12px;border-radius:10px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);line-height:1.35;font-size:clamp(12px,3.4vw,15px)}
+#info .t{font-size:1.9em;font-weight:700;letter-spacing:.5px}
+#info .t small{font-size:.5em;font-weight:500;margin-left:8px;opacity:.9}
+#info .loc{opacity:.95}
+#info .dim{opacity:.7}
+#bar{position:fixed;left:0;right:0;bottom:0;height:calc(116px + env(safe-area-inset-bottom,0px));padding-bottom:env(safe-area-inset-bottom,0px);display:flex;align-items:center;justify-content:space-around;background:rgba(0,0,0,.7)}
+button{font:inherit;color:inherit;border:0;cursor:pointer}
+#shot{width:74px;height:74px;border-radius:50%;background:#fff;border:5px solid #000;outline:3px solid #fff;transition:transform .08s}
+#shot:active{transform:scale(.9)}
+#shot:disabled{opacity:.4}
+.side{width:52px;height:52px;border-radius:50%;background:#2a2a2a;font-size:22px;display:grid;place-items:center;overflow:hidden}
+#last{background-size:cover;background-position:center}
+#status{position:fixed;top:calc(10px + env(safe-area-inset-top,0px));left:10px;right:10px;text-align:center;font-size:13px}
+#status span{display:inline-block;padding:5px 12px;border-radius:99px;background:rgba(0,0,0,.6)}
+#view{position:fixed;inset:0;background:#000;display:none;flex-direction:column}
+#view.on{display:flex}
+#view img{flex:1;min-height:0;width:100%;object-fit:contain}
+#view .acts{display:flex;gap:10px;padding:12px;padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))}
+#view .acts button{flex:1;padding:14px;border-radius:10px;background:#2a2a2a;font-weight:600}
+#view .acts .pri{background:#1fa971}
+#err{position:fixed;inset:0;display:none;place-items:center;text-align:center;padding:30px;background:#000;line-height:1.5}
+#err.on{display:grid}
+</style>
+</head>
+<body>
+<video id="cam" autoplay playsinline muted></video>
+<div id="status"><span id="st">Getting location…</span></div>
+
+<div id="info">
+  <div class="t"><span id="time">--:--</span><small id="dateday"></small></div>
+  <div class="dim" id="coords">Lat — | Long —</div>
+  <div class="loc" id="l1">Area: — | District: —</div>
+  <div class="loc" id="l2">State: — | Pincode: —</div>
+</div>
+
+<div id="bar">
+  <button class="side" id="last" aria-label="View last photo">🖼</button>
+  <button id="shot" aria-label="Take photo"></button>
+  <button class="side" id="flip" aria-label="Switch camera">🔄</button>
+</div>
+
+<div id="view">
+  <img id="prev" alt="Captured photo">
+  <div class="acts">
+    <button id="retake">Retake</button>
+    <button id="share">Share</button>
+    <button class="pri" id="save">Save</button>
+  </div>
+</div>
+
+<div id="err"><div id="errmsg"></div></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const cam = $('cam'), shot = $('shot');
+let stream, facing = 'environment', pos = null, lastGeo = null, geoBusy = false, blob = null, fname = '';
+let addr = { area: '—', district: '—', state: '—', pincode: '—' };
+
+const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const pad = n => String(n).padStart(2, '0');
+function now() {
+  const d = new Date(), h = d.getHours();
+  return {
+    d,
+    time: pad(h % 12 || 12) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + ' ' + (h < 12 ? 'AM' : 'PM'),
+    date: pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear(),
+    day: DAYS[d.getDay()]
+  };
+}
+function lines() {
+  const n = now();
+  const lat = pos ? pos.latitude.toFixed(6) : '—', lon = pos ? pos.longitude.toFixed(6) : '—';
+  return {
+    n,
+    l0: n.time,
+    l0b: n.date + ' | ' + n.day,
+    l1: 'Lat ' + lat + ' | Long ' + lon,
+    l2: 'Area: ' + addr.area + ' | District: ' + addr.district,
+    l3: 'State: ' + addr.state + ' | Pincode: ' + addr.pincode
+  };
+}
+function render() {
+  const L = lines();
+  $('time').textContent = L.n.time;
+  $('dateday').textContent = L.l0b;
+  $('coords').textContent = L.l1;
+  $('l1').textContent = L.l2;
+  $('l2').textContent = L.l3;
+}
+setInterval(render, 1000); render();
+
+/* ---------- Camera ---------- */
+async function startCam() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false
+    });
+    cam.srcObject = stream;
+    cam.style.transform = facing === 'user' ? 'scaleX(-1)' : 'none';
+    $('err').classList.remove('on');
+  } catch (e) {
+    $('errmsg').innerHTML = '<h2>Camera blocked</h2><p>Allow camera access in your browser settings, then reload this page.</p>';
+    $('err').classList.add('on');
+  }
+}
+$('flip').onclick = () => { facing = facing === 'user' ? 'environment' : 'user'; startCam(); };
+
+/* ---------- Location ---------- */
+function dist(a, b, c, d) {
+  const R = 6371000, r = x => x * Math.PI / 180;
+  const h = Math.sin(r(c - a) / 2) ** 2 + Math.cos(r(a)) * Math.cos(r(c)) * Math.sin(r(d - b) / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+async function reverse(lat, lon) {
+  if (geoBusy) return;
+  geoBusy = true;
+  try {
+    const r = await fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&accept-language=en&zoom=18&lat=' + lat + '&lon=' + lon);
+    const a = (await r.json()).address || {};
+    addr = {
+      area: a.suburb || a.neighbourhood || a.village || a.hamlet || a.town || a.city_district || a.city || '—',
+      district: a.state_district || a.county || a.city || '—',
+      state: a.state || '—',
+      pincode: a.postcode || '—'
+    };
+    lastGeo = { lat, lon };
+    $('st').textContent = '📍 Location locked';
+    render();
+  } catch (e) {
+    $('st').textContent = 'Address unavailable (check internet)';
+  }
+  geoBusy = false;
+}
+function startGeo() {
+  if (!navigator.geolocation) { $('st').textContent = 'GPS not supported'; return; }
+  navigator.geolocation.watchPosition(p => {
+    pos = p.coords;
+    $('st').textContent = '📍 GPS ±' + Math.round(pos.accuracy) + ' m';
+    if (!lastGeo || dist(lastGeo.lat, lastGeo.lon, pos.latitude, pos.longitude) > 40) reverse(pos.latitude, pos.longitude);
+    render();
+  }, e => {
+    $('st').textContent = e.code === 1 ? 'Location permission denied' : 'Cannot get location';
+  }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+}
+
+/* ---------- Capture ---------- */
+shot.onclick = () => {
+  if (!cam.videoWidth) return;
+  const w = cam.videoWidth, h = cam.videoHeight;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d');
+  x.drawImage(cam, 0, 0, w, h);
+
+  const L = lines(), fs = Math.max(16, Math.round(Math.min(w, h) * 0.034));
+  const pad_ = fs * 0.7, boxH = fs * 1.9 + fs * 4.4 + pad_ * 2;
+  x.fillStyle = 'rgba(0,0,0,.55)';
+  x.fillRect(0, h - boxH, w, boxH);
+  x.fillStyle = '#fff'; x.textBaseline = 'top';
+  let y = h - boxH + pad_;
+  x.font = '700 ' + fs * 1.7 + 'px system-ui,sans-serif';
+  x.fillText(L.l0, pad_, y);
+  const tw = x.measureText(L.l0).width;
+  x.font = '500 ' + fs * 0.9 + 'px system-ui,sans-serif';
+  x.fillText(L.l0b, pad_ + tw + fs * 0.6, y + fs * 0.7);
+  y += fs * 1.9;
+  x.font = '500 ' + fs + 'px system-ui,sans-serif';
+  [L.l1, L.l2, L.l3].forEach(t => {
+    let size = fs;
+    while (x.measureText(t).width > w - pad_ * 2 && size > 10) { size -= 1; x.font = '500 ' + size + 'px system-ui,sans-serif'; }
+    x.fillText(t, pad_, y);
+    y += fs * 1.45; x.font = '500 ' + fs + 'px system-ui,sans-serif';
+  });
+
+  const d = L.n.d;
+  fname = 'GPS_' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.jpg';
+  shot.disabled = true;
+  c.toBlob(b => {
+    blob = b;
+    const url = URL.createObjectURL(b);
+    $('prev').src = url;
+    $('last').style.backgroundImage = 'url(' + url + ')';
+    $('last').textContent = '';
+    $('view').classList.add('on');
+    shot.disabled = false;
+  }, 'image/jpeg', 0.92);
+};
+$('last').onclick = () => { if (blob) $('view').classList.add('on'); };
+$('retake').onclick = () => $('view').classList.remove('on');
+$('save').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = fname; a.click();
+};
+$('share').onclick = async () => {
+  const f = new File([blob], fname, { type: 'image/jpeg' });
+  if (navigator.canShare && navigator.canShare({ files: [f] })) {
+    try { await navigator.share({ files: [f], title: 'GPS Photo' }); } catch (e) {}
+  } else $('save').onclick();
+};
+
+startCam(); startGeo();
+</script>
+</body>
+</html>
